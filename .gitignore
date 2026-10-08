@@ -22,3 +22,4 @@ __pycache__/
 .env
 .DS_Store
 Thumbs.db
+live/body/live_config_body.json

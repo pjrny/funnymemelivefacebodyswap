@@ -15,7 +15,7 @@ shows the result through the **OBS Virtual Camera**.
 | Face live (LivePortrait on Runpod → OBS Virtual Camera) | ✅ **Done** | About 20 fps, about 150 ms delay over an SSH tunnel. Tested in Google Meet |
 | Face switching (5 looks on keys 1–5) | ✅ **Done** | 4 clean looks + 1 neck-tattoo look |
 | Body LoRA (SD1.5, 5 body styles) | ✅ **Trained** | About 30 min on an A40, about $0.29. Main + Hourglass are the focus |
-| Body live (webcam pose → ControlNet + LoRA) | 🔜 **Next** | About 3 fps today, needs 10+. StreamDiffusion/TensorRT on a 4090 is planned |
+| Body live (webcam pose → ControlNet + LoRA) | ✅ **v1** | About 7–8 fps, about 230 ms on a 4090, full body plus back view. See [`live/body/`](live/body/README.md) |
 | Voice changer, mobile | 💡 Concept | See [VOICE](docs/VOICE.md) and [MOBILE](docs/MOBILE.md) |
 
 ## How it works

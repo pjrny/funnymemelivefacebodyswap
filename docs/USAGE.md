@@ -131,19 +131,29 @@ Keys work while the "Avatar1 live" window has focus:
 **Add a new face:** upload a head-on, neutral, sharp photo to `/workspace/avatar1/clean/`, then
 change the `sources` map in `live/capture_webcam.py` (search for `ord("1")`).
 
-## 6. Switch bodies (planned)
+## 6. Switch bodies (full-body live)
 
-Body live isn't built yet. The plan mirrors the face keys, with the LoRA style token swapped per key:
+Body live works (first version, Oct 8 2026). Full setup is in [`live/body/README.md`](../live/body/README.md).
+Your laptop reads your pose with RTMPose on the CPU and sends only skeleton keypoints to the pod. The pod renders
+Avatar1 in that pose with ControlNet OpenPose, the body LoRA, and LCM in 2 steps. That gives about 7–8 fps
+and about 230 ms latency on an RTX 4090. Turning around switches to a back view. Every frame passes an NSFW check.
 
-| Planned key | Style token | Look |
+Start it with `live\body\start_body.bat` once the pod is up. Then focus the "Avatar1 body" window:
+
+| Key | Style token | Look |
 |---|---|---|
-| `1` | `av1main` | White crop tank, long silver hair |
-| `2` | `av1hourglass` | Hourglass figure, skin-tone bodysuit, bun |
-| `3` | `av1testing` | Slim, white linen shirt, bun |
-| `4` | `av1outfits` | Tees and shirts, slicked ponytail |
-| `t` (toggle) | add `face tattoos, neck tattoos` | Tattoos on any style |
+| `1` | `av1main` | White crop tank, long silver hair (default) |
+| `2` | `av1hourglass` | Hourglass figure, always in an opaque black top and trousers |
+| `3` | `av1outfits` | Tees and shirts, slicked ponytail |
+| `4` | `av1testing` | Slim, white linen shirt, bun |
+| `t` | add `face tattoos, neck tattoos` | Tattoos on any style |
+| `[` / `]` | fewer or more steps | Faster or sharper |
+| `s` | new seed | New variation |
+| `f` | framing | Auto, full body, or waist-up |
+| `q` | quit | |
 
-Because all styles are in one LoRA, switching is just a prompt change: no reload.
+Stand back far enough that your feet are in the shot for full body. All styles are in one LoRA, so switching is
+just a prompt change with no reload.
 
 ## 7. Restore the face photos on a new pod
 
