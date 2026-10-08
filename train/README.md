@@ -29,3 +29,5 @@ Suggested negative: `lowres, blurry, deformed, bad anatomy, nude, topless, nippl
 Base Realistic Vision V6.0 B1 (fp16, noVAE) + sd-vae-ft-mse · LoRA rank 32 / alpha 16 · 640px with buckets 320–1024, no upscaling ·
 AdamW8bit, unet 1e-4 / TE 5e-5, cosine, 100 warmup · batch 2 × 10 epochs = 2020 steps · bf16, SDPA, noise offset 0.05, min-SNR 5 ·
 captions with `--shuffle_caption --keep_tokens 2`. Repeats: main 2, hourglass 3, testing 6, outfits 2, tattoo 3, clean face refs 3.
+
+Step-by-step training + privacy notes: [docs/USAGE.md §10](../docs/USAGE.md#10-train-the-body-lora). Body realtime roadmap: [docs/OPTIMIZATION.md](../docs/OPTIMIZATION.md).

@@ -23,8 +23,8 @@ pose (the tattoos smear more).
 ## Run it
 Pod (SSH in, or use the Jupyter terminal):
 ```bash
-/workspace/live/start_live_server.sh                      # default: tattoo_front.jpg, expression-only
-/workspace/live/start_live_server.sh --source /workspace/avatar1/clean_front.jpg --region all
+/workspace/live/start_live_server.sh                      # default: clean/clean_03.jpg (ponytail), expression-only
+/workspace/live/start_live_server.sh --source /workspace/avatar1/clean/clean_06.jpg --region all
 tail -f /workspace/logs/live_server.log                   # wait for "[live] ready" (~70 s)
 ```
 Laptop: double-click `live\start_live.bat`, or run
@@ -55,3 +55,5 @@ Preview window keys: `c` calibrate (hold a neutral face and press c) · `e` expr
   camera/display**. Through the Runpod HTTPS proxy it's ~10–13 fps and ~200 ms.
 * Server-side ceiling is ~18–20 fps. Next steps to go faster: TensorRT (FasterLivePortrait), GPU-side
   face tracking, and a pod with a faster CPU.
+
+Full walkthrough, key table, Meet/Zoom setup, and troubleshooting live in [docs/USAGE.md](../docs/USAGE.md) and [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md).

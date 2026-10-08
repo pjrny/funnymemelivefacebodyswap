@@ -1,3 +1,24 @@
+# Secrets and local config — never commit
 live/live_config.json
 live/token
 live/.venv/
+
+# Datasets, weights, photos, renders — private, stay on disk
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+dataset/
+lora_out/
+Avatar1/
+*.7z
+*.zip
+
+# Python / editor noise
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+Thumbs.db

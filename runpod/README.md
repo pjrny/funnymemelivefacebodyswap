@@ -37,3 +37,5 @@ Results go to `/workspace/avatar1/out/`. Copy them back with `scp -P <port> root
 runpodctl pod stop <pod-id>      # releases the GPU (container disk is wiped)
 runpodctl pod delete <pod-id>    # terminate and stop billing completely
 ```
+
+See also the project docs: [USAGE](../docs/USAGE.md), [TROUBLESHOOTING](../docs/TROUBLESHOOTING.md), [HOW_WE_BUILT_IT](../docs/HOW_WE_BUILT_IT.md).
