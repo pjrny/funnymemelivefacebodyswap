@@ -414,7 +414,7 @@ class Engine:
 
 # ---------------- web app ----------------
 ap = argparse.ArgumentParser()
-ap.add_argument("--source", default="/workspace/avatar1/tattoo_front.jpg")
+ap.add_argument("--source", default="/workspace/avatar1/clean/clean_03.jpg")
 ap.add_argument("--region", default="exp")
 ap.add_argument("--port", type=int, default=8080)
 ap.add_argument("--out_w", type=int, default=960)
