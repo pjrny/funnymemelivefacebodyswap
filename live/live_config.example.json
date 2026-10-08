@@ -1,0 +1,8 @@
+{
+ "url": "wss://<POD_ID>-8080.proxy.runpod.net",
+ "http": "https://<POD_ID>-8080.proxy.runpod.net",
+ "token": "<contents of /workspace/live/token on the pod>",
+ "cam": 0,
+ "ssh_host": "<pod public IP>",
+ "ssh_port": 10264
+}
