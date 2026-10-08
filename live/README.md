@@ -38,7 +38,7 @@ Laptop setup (one time): `py -3.13 -m venv live\.venv` and
 installed so the **OBS Virtual Camera** device exists. OBS does not need to be running.
 
 Preview window keys: `c` calibrate (hold a neutral face and press c) · `e` expression only · `a` expression plus head pose ·
-`1/2/3` tattoo_front / clean_front / necktattoo_front · `+/-` motion strength · `q` quit.
+`1` ponytail (clean_03) · `2` smirk bun (clean_06) · `3` silver bun (clean_01) · `4` parted-lips bun (clean_05) · `5` neck-tattoo avatar · `+/-` motion strength · `q` quit.
 
 ## Using it in a call / OBS
 * **Zoom/Meet/Teams:** pick the camera **"OBS Virtual Camera"** while `start_live` is running.

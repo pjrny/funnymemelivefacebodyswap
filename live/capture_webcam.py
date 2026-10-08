@@ -313,9 +313,10 @@ def main():
     t_start = time.time()
     last_print = 0
     last_snap = 0
-    sources = {ord("1"): "tattoo_front.jpg", ord("2"): "clean_front.jpg", ord("3"): "necktattoo_front.jpg"}
+    sources = {ord("1"): "clean/clean_03.jpg", ord("2"): "clean/clean_06.jpg", ord("3"): "clean/clean_01.jpg", ord("4"): "clean/clean_05.jpg",
+               ord("5"): "necktattoo_front.jpg"}  # 1 ponytail (favorite), 2 smirk bun, 3 silver bun, 4 parted-lips bun, 5 neck-tattoo avatar
     mult = 1.0
-    win = "Avatar1 live (c=calibrate, e/a=exp/all, 1-3 source, q=quit)"
+    win = "Avatar1 live (c=calibrate, e/a=exp/all, 1-4 clean, 5 tattoo, q=quit)"
     while S.running:
         now = time.time()
         if now - last_print > 5:
