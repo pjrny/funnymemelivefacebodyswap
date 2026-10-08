@@ -1,0 +1,5 @@
+avtr1 woman, av1main, no tattoos, white cropped tank top, long hair down, waist-up, front view, plain grey studio background, photo --n lowres, blurry, deformed, nude --w 512 --h 640 --s 25 --l 6.5 --d 7
+avtr1 woman, av1hourglass, no tattoos, hourglass figure, nude-colored seamless bodysuit, hair in bun, waist-up, front view, plain grey studio background, photo --n lowres, blurry, deformed, nude --w 512 --h 640 --s 25 --l 6.5 --d 7
+avtr1 woman, av1testing, no tattoos, slim build, hair in bun, white linen shirt, waist-up, front view, plain grey studio background, photo --n lowres, blurry, deformed, nude, nipples --w 512 --h 640 --s 25 --l 6.5 --d 7
+avtr1 woman, av1outfits, no tattoos, white t-shirt, slicked back ponytail, waist-up, front view, plain white studio background, photo --n lowres, blurry, deformed, nude --w 512 --h 640 --s 25 --l 6.5 --d 7
+avtr1 woman, av1tattoo, face tattoos, neck tattoos, long hair down, waist-up, black t-shirt, front view, photo --n lowres, blurry, deformed, nude --w 512 --h 640 --s 25 --l 6.5 --d 7
