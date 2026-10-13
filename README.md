@@ -16,7 +16,8 @@ shows the result through the **OBS Virtual Camera**.
 | Face switching (5 looks on keys 1–5) | ✅ **Done** | 4 clean looks + 1 neck-tattoo look |
 | Body LoRA (SD1.5, 5 body styles) | ✅ **Trained** | About 30 min on an A40, about $0.29. Main + Hourglass are the focus |
 | Body live (webcam pose → ControlNet + LoRA) | ✅ **v1** | About 7–8 fps, about 230 ms on a 4090, full body plus back view. See [`live/body/`](live/body/README.md) |
-| Voice changer, mobile | 💡 Concept | See [VOICE](docs/VOICE.md) and [MOBILE](docs/MOBILE.md) |
+| Voice changer, mobile | 💡 Concept | See [VOICE](docs/VOICE.md)
+- [Session log and feedback](docs/SESSION_LOG.md) and [MOBILE](docs/MOBILE.md) |
 
 ## How it works
 
@@ -83,7 +84,8 @@ Planned body keys: **1 Main**, **2 Hourglass** (see [USAGE §6](docs/USAGE.md#6-
 | [BEST_PRACTICES](docs/BEST_PRACTICES.md) | Best versions, lighting, framing, network, privacy, cost, responsible use |
 | [OPTIMIZATION](docs/OPTIMIZATION.md) | Roadmap for cost, speed, and accuracy |
 | [MOBILE](docs/MOBILE.md) | Using it with phone calls: Zoom/Meet mobile, WhatsApp, FaceTime |
-| [VOICE](docs/VOICE.md) | Voice changer concepts: ElevenLabs, Ableton Live 11, local RVC |
+| [VOICE](docs/VOICE.md)
+- [Session log and feedback](docs/SESSION_LOG.md) | Voice changer concepts: ElevenLabs, Ableton Live 11, local RVC |
 
 ## Repo layout
 
