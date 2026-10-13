@@ -129,7 +129,8 @@ Keys work while the "Avatar1 live" window has focus:
 | `r` | Extra head turn on top of the chosen photo (±10°) on/off | |
 | `c` | Calibrate: look straight, neutral face. **Press after every switch** | |
 | `e` / `a` | Expression only (default, sharpest) / expression + head pose | |
-| `+` / `-` | Motion strength up/down (0.3–2.0) | |
+| `b` | Face-swap **beard cover** on/off (default on): cleans the chin/jaw/upper-lip stubble to smooth skin before the swap and widens the blend mask over chin and jaw | |
+| `+` / `-` | In face-swap mode: **jaw slim** strength up/down (0–1, steps of 0.1, default 0.4). In LivePortrait mode: motion strength up/down (0.3–2.0) | |
 | `q` / Esc | Quit (closes the tunnel too) | |
 
 Launcher flags: `start_live.ps1 -- --mode swap` starts in face-swap mode, `-- --no-inset` starts with the

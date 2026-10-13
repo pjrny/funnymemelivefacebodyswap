@@ -17,7 +17,9 @@ Keys in the preview window (v2):
     g = face-swap enhancer: GFPGAN -> GPEN -> off        v = angle switching on/off (sets 1/2)
     r = extra head-turn on/off (angle sets)              p = your webcam inset in the corner on/off
     c = calibrate (look straight, neutral face)          e / a = expression-only / expression + head pose
-    +/- = motion strength                                q/Esc = quit
+    b = beard cover on/off (face-swap mode)              +/- = jaw slim 0..1 in face-swap mode
+                                                           (default 0.4), motion strength otherwise
+    q/Esc = quit
 """
 import argparse, json, os, struct, sys, threading, time
 import http.server, socketserver
@@ -384,10 +386,12 @@ def main():
             toggles["residual"] = not toggles["residual"]; control({"residual_deg": 10 if toggles["residual"] else 0})
         elif k == ord("p"):
             INSET["on"] = not INSET["on"]
+        elif k == ord("b"):
+            control({"beard": "toggle"})
         elif k in (ord("+"), ord("=")):
-            mult = min(2.0, mult + 0.1); control({"multiplier": mult})
+            control({"step": 1})    # server: jaw slim (swap mode) or motion strength (LivePortrait)
         elif k == ord("-"):
-            mult = max(0.3, mult - 0.1); control({"multiplier": mult})
+            control({"step": -1})
 
     while S.running:
         if script and time.time() - t_start >= script[0][0]:

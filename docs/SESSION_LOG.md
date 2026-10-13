@@ -19,3 +19,16 @@
 - Beard: run a lower-face cleanup before the swap. Options are a skin-texture inpaint of the beard region on the driver frame, a larger swap mask that covers the chin and jaw, or a higher-resolution swapper (for example 256 px or a sharpened variant) so stubble doesn't bleed through.
 - Jaw: apply a light liquify or warp of the lower-face landmarks toward Avatar1's jaw proportions before blending, with an adjustable strength key.
 - Tune set-2 angle switching and log laptop fps to file.
+
+## 2026-10-13: beard cover and jaw slim for face-swap mode (branch `face-v2-beard-jaw`)
+
+**What changed** (`live/face_swap_engine.py`, server and laptop keys):
+- Beard cover (`b`, default on): InsightFace 106-point landmarks find the lower face. The beard and mustache area (lips kept) is filled with Oscar's own cheek skin tone, soft shading and fine grain *before* inswapper. The swap is then blended over a landmark-shaped, feathered chin/jaw mask instead of only the inner-face box. No stubble shows through in the CPU tests.
+- Jaw slim (`+`/`-`, 0 to 1, default 0.4): a smooth Gaussian-RBF warp pulls the lower jaw and chin contour toward the midline (up to about 12% of face height at 1.0). The effect fades out within about a sixth of the face height, so hair, headphones and background stay put.
+- Env defaults for the pod: `FS_BEARD=1`, `FS_JAW=0.4`.
+
+**Speed** (RTX 4090 bench, GPEN on, 150 frames): 27.7 ms per frame before and 35.3 ms after, so about 7.6 ms added (landmarks plus fill about 2.2 ms, mask about 2 ms, jaw warp about 2.9 ms). That is within the 20 fps live budget.
+
+**Not done:** there is no readily available 256-px inswapper-class model, so the pipeline stays on inswapper_128 + GPEN.
+
+**To check in the next live session:** how the fill looks under different lighting. The skin fill is smooth, so the lower face looks slightly airbrushed. Also check the neck and under-chin when not wearing a hood.

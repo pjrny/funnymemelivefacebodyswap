@@ -463,7 +463,9 @@ class Engine:
         if self.swapper is None:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from face_swap_engine import FaceSwapEngine
-            self.swapper = FaceSwapEngine(FS_MODELS, enhancer=os.environ.get("FS_ENHANCER", "gpen"))
+            self.swapper = FaceSwapEngine(FS_MODELS, enhancer=os.environ.get("FS_ENHANCER", "gpen"),
+                                          beard_on=os.environ.get("FS_BEARD", "1") == "1",
+                                          jaw_strength=float(os.environ.get("FS_JAW", "0.4")))
             # warm up (cuDNN autotune) on the current source photo
             bgr = cv2.cvtColor(self.source_rgb, cv2.COLOR_RGB2BGR)
         key = tuple(self._swap_identity_paths())
@@ -601,6 +603,19 @@ class Engine:
                 self.reset()
             elif self.mode == "swap" and ("set" in d or "source" in d):
                 self.ensure_swapper()  # new identity for the face swap
+            if "step" in d:  # '-'/'=' keys: jaw slim strength in swap mode, motion strength in LivePortrait mode
+                st = 0.1 * (1 if float(d["step"]) > 0 else -1)
+                if self.mode == "swap" and self.swapper is not None:
+                    self.swapper.jaw_strength = round(max(0.0, min(1.0, self.swapper.jaw_strength + st)), 2)
+                else:
+                    self.multiplier = round(max(0.3, min(2.0, self.multiplier + st)), 2)
+            if "jaw" in d and self.swapper is not None:
+                self.swapper.jaw_strength = max(0.0, min(1.0, float(d["jaw"])))
+            if "beard" in d and self.swapper is not None:
+                v = d["beard"]
+                self.swapper.beard_on = (not self.swapper.beard_on) if v == "toggle" else bool(v)
+                if self.swapper.lmk is None:
+                    self.swapper.beard_on = False
             if "enhance" in d and self.swapper is not None:
                 v = d["enhance"]
                 if v == "toggle":
@@ -625,6 +640,7 @@ class Engine:
                 "set_size": len(self.entries), "angle": self.angle_on, "switches": self.switches,
                 "residual_deg": self.residual_deg, "pose_gain": self.pose_gain,
                 "enhancer": (sw.enhancer if sw.enhance_on else "off") if sw else None,
+                "beard": sw.beard_on if sw else None, "jaw": sw.jaw_strength if sw else None,
                 "swap_ms": {k: round(v, 1) for k, v in sw.t.items()} if sw else None,
                 "region": self.region, "multiplier": self.multiplier,
                 "smooth": self.smooth, "driving_option": self.driving_option,
