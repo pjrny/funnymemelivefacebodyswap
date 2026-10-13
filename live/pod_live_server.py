@@ -2,8 +2,12 @@
 """
 pod_live_server.py - realtime LivePortrait server for the Runpod GPU pod.
 
-Keeps LivePortrait loaded on the GPU and animates an Avatar1 photo with frames
-streamed from Oscar's webcam.
+Keeps LivePortrait loaded on the GPU and animates Avatar1 with frames streamed from Oscar's webcam.
+v2: angle sets (every photo in /workspace/avatar1/sets/<name>/ pre-encoded; each frame the photo
+whose head pose best matches Oscar's is used, with hysteresis + crossfade) and a true face-swap
+mode (InsightFace inswapper_128 + GFPGAN/GPEN, see face_swap_engine.py) that keeps Oscar's hair.
+Control JSON: {"set":"1"} {"source":"clean/clean_01.jpg"} {"mode":"swap"|"lp"|"toggle"}
+              {"angle":true|false} {"residual_deg":10} {"enhance":"toggle"|"cycle"|"gfpgan"|"gpen"}
 
 Endpoints (all need ?k=<token>, token lives in /workspace/live/token):
   WS   /ws            binary in : <12-byte header: float64 client_ts, uint32 frame_id> + JPEG
@@ -81,6 +85,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, 
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 
 LIVE_DIR = "/workspace/live"
+AV_DIR = "/workspace/avatar1"
+SETS_DIR = os.path.join(AV_DIR, "sets")
+FS_MODELS = os.environ.get("FS_MODELS", "/workspace/models/fs")
 TOKEN_FILE = os.path.join(LIVE_DIR, "token")
 OUT_JPG = "/workspace/avatar1/out/live.jpg"
 
@@ -118,78 +125,183 @@ class Engine:
         self.lmk_every = int(os.environ.get("LIVE_LMK_EVERY", "2"))
         self.stats = {"frames": 0, "no_face": 0}
         self.t_hist = []
-        self.set_source(source)
+        self.bank = {}
+        self.set_name, self.entries, self.cur = None, [], None
+        self.angle_on = True          # 'v' key: angle-aware photo switching
+        self.residual_deg = float(os.environ.get("LIVE_RESIDUAL_DEG", "10"))  # extra head turn on top of the photo's own pose
+        self.hyst_deg, self.hyst_frames, self.fade_frames = 6.0, 3, 4
+        self.pose_gain = float(os.environ.get("LIVE_POSE_GAIN", "1.5"))
+        self.pose_ema, self.target_pose, self.cand, self.cand_n = None, None, None, 0
+        self.fade_from, self.fade_left, self.last_out, self.switches = None, 0, None, 0
+        self.mode = "lp"              # 'lp' = LivePortrait avatar, 'swap' = true face swap (InsightFace)
+        self.swapper = None
+        self.swap_id_key = None
+        if os.path.isdir(source) or not os.path.splitext(source)[1]:
+            self.set_angle_set(source)
+        else:
+            self.set_source(source)
 
-    # ---------- source ----------
+    # ---------- sources ----------
+    # A "source" is one Avatar1 photo, fully pre-encoded on the GPU (appearance features, keypoints,
+    # head pose, output canvas + paste grid). An "angle set" is a list of sources of the same avatar
+    # at different head angles; every frame the source whose pose is closest to Oscar's head pose
+    # is swapped into the CUDA-graph buffers (a few GPU memcpys, no re-encode).
     @torch.no_grad()
-    def set_source(self, path):
+    def encode_source(self, path, aligned=False, flip=False):
         img = load_image_rgb(path)
+        if flip:
+            img = np.ascontiguousarray(img[:, ::-1])
         img = resize_to_limit(img, self.inf.source_max_dim, self.inf.source_division)
         crop_info = self.cropper.crop_source_image(img, self.crop_cfg)
         if crop_info is None:
             raise RuntimeError(f"No face in source {path}")
         w = self.w
         I_s = w.prepare_source(crop_info["img_crop_256x256"])
-        self.x_s_info = w.get_kp_info(I_s)
-        self.x_c_s = self.x_s_info["kp"]
-        self.R_s = get_rotation_matrix(self.x_s_info["pitch"], self.x_s_info["yaw"], self.x_s_info["roll"])
-        self.f_s = w.extract_feature_3d(I_s)
-        self.x_s = w.transform_keypoint(self.x_s_info)
-        self.lip_delta0 = None
+        info = w.get_kp_info(I_s)
+        e = {"path": path + (" (mirrored)" if flip else ""), "x_s_info": info, "x_c_s": info["kp"],
+             "R_s": get_rotation_matrix(info["pitch"], info["yaw"], info["roll"]),
+             "f_s": w.extract_feature_3d(I_s), "x_s": w.transform_keypoint(info), "lip_delta0": None,
+             "pose": (float(info["pitch"]), float(info["yaw"]), float(info["roll"])), "rgb": img}
         if self.inf.flag_normalize_lip and crop_info["lmk_crop"] is not None:
             c = w.calc_combined_lip_ratio([0.0], crop_info["lmk_crop"])
             if c[0][0] >= self.inf.lip_normalize_threshold:
-                self.lip_delta0 = w.retarget_lip(self.x_s, c)
-        # Output canvas: fit the (portrait) source into out_w x out_h, fill sides with a blurred copy.
+                e["lip_delta0"] = w.retarget_lip(e["x_s"], c)
         H, W = img.shape[:2]
-        s = min(self.out_w / W, self.out_h / H)
-        nw, nh = int(round(W * s)), int(round(H * s))
-        ox, oy = (self.out_w - nw) // 2, (self.out_h - nh) // 2
-        T = np.array([[s, 0, ox], [0, s, oy], [0, 0, 1]], np.float32)
         M_c2o = crop_info["M_c2o"].astype(np.float32)
         if M_c2o.shape[0] == 2:
             M_c2o = np.vstack([M_c2o, [0, 0, 1]]).astype(np.float32)
-        self.M_out = (T @ M_c2o)[:2]
-        fg = cv2.warpAffine(img, T[:2], (self.out_w, self.out_h), flags=cv2.INTER_AREA)
+        if aligned:
+            # angle sets: put every photo's face crop at the same place/size so switching photos
+            # does not make the head jump around the frame
+            crop_px = 512.0 * float(np.sqrt(abs(np.linalg.det(M_c2o[:2, :2]))))
+            cx, cy = (M_c2o @ np.array([256, 256, 1], np.float32))[:2]
+            s = (0.95 * self.out_h) / crop_px
+            ox, oy = self.out_w / 2 - s * cx, 0.45 * self.out_h - s * cy
+        else:
+            s = min(self.out_w / W, self.out_h / H)
+            ox, oy = (self.out_w - W * s) / 2, (self.out_h - H * s) / 2
+        T = np.array([[s, 0, ox], [0, s, oy], [0, 0, 1]], np.float32)
+        M_out = (T @ M_c2o)[:2]
+        fg = cv2.warpAffine(img, T[:2], (self.out_w, self.out_h), flags=cv2.INTER_AREA, borderMode=cv2.BORDER_REPLICATE)
         sb = max(self.out_w / W, self.out_h / H)
         bg = cv2.resize(img, (int(W * sb) + 1, int(H * sb) + 1), interpolation=cv2.INTER_AREA)
         by, bx = (bg.shape[0] - self.out_h) // 2, (bg.shape[1] - self.out_w) // 2
         bg = bg[by:by + self.out_h, bx:bx + self.out_w]
-        bg = cv2.GaussianBlur(bg, (0, 0), 25)
-        bg = (bg.astype(np.float32) * 0.6).astype(np.uint8)
-        canvas = bg.copy()
-        canvas[oy:oy + nh, ox:ox + nw] = fg[oy:oy + nh, ox:ox + nw]
-        self.canvas = canvas.astype(np.float32)
+        bg = (cv2.GaussianBlur(bg, (0, 0), 25).astype(np.float32) * 0.6)
+        inside = cv2.warpAffine(np.ones((H, W), np.float32), T[:2], (self.out_w, self.out_h), flags=cv2.INTER_LINEAR)
+        inside = cv2.GaussianBlur(cv2.erode(inside, np.ones((5, 5), np.uint8)), (0, 0), 3)[..., None]
+        canvas = inside * fg.astype(np.float32) + (1 - inside) * bg
         mask_crop = self.inf.mask_crop  # 512x512x3 uint8 (crop space)
-        mask_out = cv2.warpAffine(mask_crop, self.M_out, (self.out_w, self.out_h), flags=cv2.INTER_LINEAR).astype(np.float32) / 255.0
-        # only paste where the source photo actually is (the face crop can extend past the photo edges)
-        valid = np.zeros((self.out_h, self.out_w), np.float32)
-        valid[oy + 2:oy + nh - 2, ox + 2:ox + nw - 2] = 1.0
-        valid = cv2.GaussianBlur(valid, (0, 0), 2)
-        mask_out = mask_out * valid[..., None]
-        # GPU paste-back: sampling grid from output pixels back into the 512x512 crop
-        Minv = np.linalg.inv(np.vstack([self.M_out, [0, 0, 1]]))
+        mask_out = cv2.warpAffine(mask_crop, M_out, (self.out_w, self.out_h), flags=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+        mask_out = mask_out * inside  # only paste where the source photo actually is
+        Minv = np.linalg.inv(np.vstack([M_out, [0, 0, 1]]))
         us, vs = np.meshgrid(np.arange(self.out_w, dtype=np.float32), np.arange(self.out_h, dtype=np.float32))
         pts = np.stack([us, vs, np.ones_like(us)], -1) @ Minv.T.astype(np.float32)
         gx = (2 * pts[..., 0] + 1) / 512.0 - 1
         gy = (2 * pts[..., 1] + 1) / 512.0 - 1
         dev = self.device
-        grid = torch.from_numpy(np.stack([gx, gy], -1)[None]).to(dev)
-        mask_t = torch.from_numpy(mask_out).permute(2, 0, 1)[None].to(dev)
-        canvas_t = torch.from_numpy(canvas.astype(np.float32) / 255.0).permute(2, 0, 1)[None].to(dev)
+        e["grid"] = torch.from_numpy(np.stack([gx, gy], -1)[None]).to(dev)
+        e["mask"] = torch.from_numpy(np.ascontiguousarray(mask_out.transpose(2, 0, 1), np.float32))[None].to(dev)
+        e["canvas"] = torch.from_numpy(np.ascontiguousarray(canvas.transpose(2, 0, 1) / 255.0, np.float32))[None].to(dev)
+        if os.environ.get("LIVE_DEBUG_CANVAS"):
+            cv2.imwrite(f"/workspace/avatar1/out/canvas_{os.path.basename(path)}", cv2.cvtColor(np.clip(canvas, 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+        return e
+
+    def _activate(self, e):
+        """make encoded source e the one being animated (GPU memcpy into the graph buffers)"""
+        self.cur = e
+        self.x_s_info, self.x_c_s, self.R_s = e["x_s_info"], e["x_c_s"], e["R_s"]
+        self.f_s, self.x_s, self.lip_delta0 = e["f_s"], e["x_s"], e["lip_delta0"]
+        self.source_path, self.source_rgb = e["path"], e["rgb"]
         if not hasattr(self, "st"):
-            # static buffers: CUDA graphs replay against these fixed addresses
-            self.st = {"f_s": self.f_s.clone(), "x_s": self.x_s.clone(), "grid": grid, "mask": mask_t,
-                       "canvas": canvas_t, "I_d": torch.zeros(1, 3, 256, 256, device=dev),
-                       "x_d": self.x_s.clone()}
+            dev = self.device
+            self.st = {"f_s": e["f_s"].clone(), "x_s": e["x_s"].clone(), "grid": e["grid"].clone(),
+                       "mask": e["mask"].clone(), "canvas": e["canvas"].clone(),
+                       "I_d": torch.zeros(1, 3, 256, 256, device=dev), "x_d": e["x_s"].clone()}
+            self._build_graphs()
         else:
-            for k, v in (("f_s", self.f_s), ("x_s", self.x_s), ("grid", grid), ("mask", mask_t), ("canvas", canvas_t)):
-                self.st[k].copy_(v)
-        self._build_graphs()
-        self.source_path = path
-        self.source_rgb = img
+            for k in ("f_s", "x_s", "grid", "mask", "canvas"):
+                self.st[k].copy_(e[k])
+        self.motion_mult = None
+
+    @torch.no_grad()
+    def set_source(self, path):
+        """single photo (keys 3/4/5): classic expression-only LivePortrait"""
+        key = ("single", path)
+        if key not in self.bank:
+            self.bank[key] = [self.encode_source(path)]
+        self.set_name, self.entries = None, self.bank[key]
+        self._activate(self.entries[0])
         self.reset()
 
+    @torch.no_grad()
+    def set_angle_set(self, name):
+        """angle set (keys 1/2): every photo in /workspace/avatar1/sets/<name>/ pre-encoded"""
+        key = ("set", name)
+        if key not in self.bank:
+            d = name if os.path.isabs(name) else os.path.join(SETS_DIR, name)
+            paths = sorted(p for p in os.listdir(d) if p.lower().endswith((".jpg", ".jpeg", ".png")))
+            ents = []
+            for p in paths:
+                try:
+                    ents.append(self.encode_source(os.path.join(d, p), aligned=True))
+                except Exception as ex:  # noqa: BLE001
+                    print("[live] skip", p, ex, flush=True)
+            if not ents:
+                raise RuntimeError(f"no usable photos in {d}")
+            # fill the other side: mirror strongly turned photos whose mirror angle has no real photo
+            if os.environ.get("LIVE_MIRROR", "1") == "1":
+                for e in list(ents):
+                    y = e["pose"][1]
+                    if abs(y) > 20 and not any(abs(o["pose"][1] + y) < 12 for o in ents):
+                        try:
+                            ents.append(self.encode_source(e["path"], aligned=True, flip=True))
+                        except Exception as ex:  # noqa: BLE001
+                            print("[live] mirror skip", e["path"], ex, flush=True)
+            # the most frontal photo is the "home" pose that a calibrated neutral face maps to
+            ents.sort(key=lambda e: abs(e["pose"][1]) + abs(e["pose"][0]))
+            self.bank[key] = ents
+            print(f"[live] set {name}: " + ", ".join(f"{os.path.basename(e['path'])[:28]} y{e['pose'][1]:+.0f} p{e['pose'][0]:+.0f}" for e in ents), flush=True)
+        self.set_name, self.entries = name, self.bank[key]
+        self._activate(self.entries[0])
+        self.reset()
+
+    def _pick_source(self, x_d):
+        """choose the photo whose head pose best matches Oscar's (relative to the calibrated neutral)"""
+        if len(self.entries) < 2 or not self.angle_on:
+            return
+        home = self.entries[0]["pose"]
+        rp = float(x_d["pitch"]) - float(self.x_d_0_info["pitch"])
+        ry = float(x_d["yaw"]) - float(self.x_d_0_info["yaw"])
+        if self.pose_ema is None:
+            self.pose_ema = (rp, ry)
+        else:
+            a = 0.5
+            self.pose_ema = (a * self.pose_ema[0] + (1 - a) * rp, a * self.pose_ema[1] + (1 - a) * ry)
+        # webcam turns are smaller than the photo angles (+-45..60 deg): scale them up a bit
+        tp, ty = home[0] + self.pose_gain * self.pose_ema[0], home[1] + self.pose_gain * self.pose_ema[1]
+        self.target_pose = (tp, ty)
+
+        def dist(e):
+            return abs(e["pose"][1] - ty) + 0.6 * abs(e["pose"][0] - tp)
+        best = min(self.entries, key=dist)
+        if best is self.cur:
+            self.cand, self.cand_n = None, 0
+            return
+        if dist(best) > dist(self.cur) - self.hyst_deg:
+            self.cand, self.cand_n = None, 0
+            return
+        if best is self.cand:
+            self.cand_n += 1
+        else:
+            self.cand, self.cand_n = best, 1
+        if self.cand_n >= self.hyst_frames:
+            self.fade_from = self.last_out.clone() if self.last_out is not None else None
+            self.fade_left = self.fade_frames
+            self._activate(best)
+            self.prev_x = None
+            self.switches += 1
+            self.cand, self.cand_n = None, 0
 
     def _ctx(self):
         return torch.autocast(device_type="cuda", dtype=torch.float16, cache_enabled=False)
@@ -266,6 +378,10 @@ class Engine:
         self.bbox = None
         self.frame_idx = 0
         self.prev_x = None
+        self.pose_ema = None
+        self.cand, self.cand_n = None, 0
+        if getattr(self, "entries", None) and self.cur is not self.entries[0]:
+            self._activate(self.entries[0])
 
     # ---------- driving ----------
     def _landmarks(self, frame_rgb):
@@ -308,6 +424,8 @@ class Engine:
         frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return None, 0.0
+        if self.mode == "swap":
+            return ("swap", frame), (time.perf_counter() - t0) * 1e3
         with self.lock_prep:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             crop = self._drive_crop(frame_rgb)
@@ -322,13 +440,58 @@ class Engine:
     def gpu(self, crop):
         """animate + JPEG-encode on the GPU (nvjpeg); returns JPEG bytes"""
         t0 = time.perf_counter()
+        if isinstance(crop, tuple):
+            return self._swap_frame(crop[1], t0)
+        if self.mode == "swap":  # mode changed while this LivePortrait crop was queued
+            return None, 0.0
         with self.lock_gpu:
             img = self._animate(crop)
             try:
-                jpg = encode_jpeg(img, quality=self.jpeg_q).cpu().numpy().tobytes()
+                jpg = encode_jpeg(img.contiguous(), quality=self.jpeg_q).cpu().numpy().tobytes()
             except Exception:
                 rgb = img.permute(1, 2, 0).contiguous().cpu().numpy()
                 jpg = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_q])[1].tobytes()
+        return jpg, (time.perf_counter() - t0) * 1e3
+
+    # ---------- true face-swap mode ----------
+    def _swap_identity_paths(self):
+        if self.set_name is not None:
+            return [e["path"] for e in self.entries if not e["path"].endswith("(mirrored)")]
+        return [self.source_path]
+
+    def ensure_swapper(self):
+        if self.swapper is None:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from face_swap_engine import FaceSwapEngine
+            self.swapper = FaceSwapEngine(FS_MODELS, enhancer=os.environ.get("FS_ENHANCER", "gpen"))
+            # warm up (cuDNN autotune) on the current source photo
+            bgr = cv2.cvtColor(self.source_rgb, cv2.COLOR_RGB2BGR)
+        key = tuple(self._swap_identity_paths())
+        if key != self.swap_id_key:
+            used = self.swapper.set_identity(list(key))
+            self.swap_id_key = key
+            print(f"[live] swap identity from {len(used)} photo(s)", flush=True)
+            bgr = cv2.cvtColor(self.source_rgb, cv2.COLOR_RGB2BGR)
+            for _ in range(3):
+                self.swapper.kps = None
+                self.swapper.process(bgr)
+            self.swapper.kps = None
+
+    def _swap_frame(self, frame, t0):
+        with self.lock_gpu:
+            out = self.swapper.process(frame)
+        if out is None:
+            self.stats["no_face"] += 1
+            return None, (time.perf_counter() - t0) * 1e3
+        H, W = out.shape[:2]
+        s = min(self.out_w / W, self.out_h / H)
+        nw, nh = int(round(W * s)), int(round(H * s))
+        if (nw, nh) != (self.out_w, self.out_h):
+            canvas = np.zeros((self.out_h, self.out_w, 3), np.uint8)
+            ox, oy = (self.out_w - nw) // 2, (self.out_h - nh) // 2
+            canvas[oy:oy + nh, ox:ox + nw] = cv2.resize(out, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            out = canvas
+        jpg = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_q])[1].tobytes()
         return jpg, (time.perf_counter() - t0) * 1e3
 
     def record(self, info):
@@ -343,6 +506,7 @@ class Engine:
         if self.x_d_0_info is None:
             self.x_d_0_info = {k: v.clone() for k, v in x_d.items() if torch.is_tensor(v)}
             self.R_d_0 = R_d.clone()
+        self._pick_source(x_d)
         x0, xs, reg = self.x_d_0_info, self.x_s_info, self.region
         if reg in ("all", "exp"):
             delta = xs["exp"] + (x_d["exp"] - x0["exp"])
@@ -351,6 +515,17 @@ class Engine:
         if reg in ("all", "pose"):
             R_new = (R_d @ self.R_d_0.permute(0, 2, 1)) @ self.R_s
             t_new = xs["t"] + (x_d["t"] - x0["t"])
+        elif self.set_name is not None and self.target_pose is not None and self.residual_deg > 0:
+            # angle set: the photo supplies most of the turn; add the small leftover difference
+            L = self.residual_deg
+            p, y, r = self.cur["pose"]
+            dp = max(-L, min(L, self.target_pose[0] - p))
+            dy = max(-L, min(L, self.target_pose[1] - y))
+            dr = max(-L, min(L, float(x_d["roll"]) - float(x0["roll"])))
+            dev = xs["pitch"].device
+            R_new = get_rotation_matrix(torch.tensor([[p + dp]], device=dev), torch.tensor([[y + dy]], device=dev),
+                                        torch.tensor([[r + dr]], device=dev))
+            t_new = xs["t"].clone()
         else:
             R_new = self.R_s
             t_new = xs["t"].clone()
@@ -369,7 +544,13 @@ class Engine:
         if self.smooth and self.prev_x is not None:
             x_new = self.smooth * self.prev_x + (1 - self.smooth) * x_new
         self.prev_x = x_new
-        return self._render(x_new)
+        img = self._render(x_new)
+        if self.fade_left > 0 and self.fade_from is not None:
+            a = self.fade_left / (self.fade_frames + 1.0)
+            img = (img.float() * (1 - a) + self.fade_from.float() * a).round().to(torch.uint8)
+            self.fade_left -= 1
+        self.last_out = img if not self.use_graphs else img.clone()
+        return img
 
     def process_jpeg(self, buf):
         """Single-shot (non-pipelined) path used by POST /frame."""
@@ -377,6 +558,8 @@ class Engine:
         if crop is None:
             return None, {"no_face": True}
         jpg, b = self.gpu(crop)
+        if jpg is None:
+            return None, {"no_face": True}
         info = {"crop_ms": a, "gpu_ms": b, "total_ms": a + b}
         self.record(info)
         return jpg, info
@@ -398,14 +581,52 @@ class Engine:
             if "source" in d:
                 p = d["source"]
                 if not os.path.isabs(p):
-                    p = os.path.join("/workspace/avatar1", p)
+                    p = os.path.join(AV_DIR, p)
                 self.set_source(p)
+            if "set" in d:
+                self.set_angle_set(str(d["set"]))
+            if "angle" in d:
+                self.angle_on = bool(d["angle"]); self.reset()
+            if "pose_gain" in d:
+                self.pose_gain = max(0.5, min(3.0, float(d["pose_gain"])))
+            if "residual_deg" in d:
+                self.residual_deg = max(0.0, min(25.0, float(d["residual_deg"])))
+            if "mode" in d:
+                m = d["mode"]
+                if m == "toggle":
+                    m = "lp" if self.mode == "swap" else "swap"
+                if m == "swap":
+                    self.ensure_swapper()
+                self.mode = m if m in ("lp", "swap") else self.mode
+                self.reset()
+            elif self.mode == "swap" and ("set" in d or "source" in d):
+                self.ensure_swapper()  # new identity for the face swap
+            if "enhance" in d and self.swapper is not None:
+                v = d["enhance"]
+                if v == "toggle":
+                    self.swapper.enhance_on = not self.swapper.enhance_on
+                elif v in self.swapper.enh:
+                    self.swapper.enhancer, self.swapper.enhance_on = v, True
+                elif v == "cycle":  # gfpgan -> gpen -> off -> gfpgan
+                    order = list(self.swapper.enh) + [None]
+                    cur = self.swapper.enhancer if self.swapper.enhance_on else None
+                    nxt = order[(order.index(cur) + 1) % len(order)]
+                    self.swapper.enhance_on = nxt is not None
+                    if nxt: self.swapper.enhancer = nxt
+                else:
+                    self.swapper.enhance_on = bool(v)
         return self.summary()
 
     def summary(self):
         now = time.time()
         recent = [ms for t, ms in self.t_hist if now - t < 5]
-        return {"source": self.source_path, "region": self.region, "multiplier": self.multiplier,
+        sw = self.swapper
+        return {"mode": self.mode, "set": self.set_name, "source": os.path.basename(self.source_path),
+                "set_size": len(self.entries), "angle": self.angle_on, "switches": self.switches,
+                "residual_deg": self.residual_deg, "pose_gain": self.pose_gain,
+                "enhancer": (sw.enhancer if sw.enhance_on else "off") if sw else None,
+                "swap_ms": {k: round(v, 1) for k, v in sw.t.items()} if sw else None,
+                "region": self.region, "multiplier": self.multiplier,
                 "smooth": self.smooth, "driving_option": self.driving_option,
                 "out": [self.out_w, self.out_h], "frames": self.stats["frames"], "no_face": self.stats["no_face"],
                 "render_fps_5s": round(len(recent) / 5.0, 1),
@@ -414,7 +635,8 @@ class Engine:
 
 # ---------------- web app ----------------
 ap = argparse.ArgumentParser()
-ap.add_argument("--source", default="/workspace/avatar1/clean/clean_03.jpg")
+ap.add_argument("--source", default=os.environ.get("LIVE_SOURCE", "1"), help="angle-set name under /workspace/avatar1/sets (e.g. 1) or a photo path")
+ap.add_argument("--mode", default="lp", choices=["lp", "swap"])
 ap.add_argument("--region", default="exp")
 ap.add_argument("--port", type=int, default=8080)
 ap.add_argument("--out_w", type=int, default=960)
@@ -424,6 +646,9 @@ args, _ = ap.parse_known_args()
 
 TOKEN = load_token()
 ENGINE = Engine(args.source, region=args.region, out_w=args.out_w, out_h=args.out_h, smooth=args.smooth)
+if args.mode == "swap" or os.environ.get("LIVE_PRELOAD_SWAP", "1") == "1":
+    ENGINE.ensure_swapper()  # load InsightFace models now so the first 'm' press is instant
+    ENGINE.control({"mode": args.mode})
 EXEC = ThreadPoolExecutor(max_workers=1)      # GPU stage + control (serialised)
 EXEC_CPU = ThreadPoolExecutor(max_workers=3)  # decode/crop and JPEG encode
 app = FastAPI()
@@ -575,6 +800,9 @@ async def ws_ep(ws: WebSocket):
         while True:
             ts, fid, crop, a = await q_gpu.get()
             jpg, b = await loop.run_in_executor(EXEC, ENGINE.gpu, crop)
+            if jpg is None:
+                await ws.send_bytes(struct.pack("<dIf", ts, fid, -1.0))
+                continue
             info = {"crop_ms": a, "gpu_ms": b, "total_ms": a + b}
             ENGINE.record(info)
             await ws.send_bytes(struct.pack("<dIf", ts, fid, info["total_ms"]) + jpg)

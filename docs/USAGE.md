@@ -111,25 +111,48 @@ proxy if the tunnel fails, and starts `capture_webcam.py`. An **"Avatar1 live"**
 
 Expected: about 20 fps, about 150 ms delay via the tunnel; about 10–13 fps via the proxy.
 
-## 5. Switch faces
+## 5. Switch faces and modes (face live v2)
 
 Keys work while the "Avatar1 live" window has focus:
 
-| Key | Look | Photo on pod |
+| Key | What it does | On the pod |
 |---|---|---|
-| `1` | Slicked silver ponytail (favorite, server default) | `/workspace/avatar1/clean/clean_03.jpg` |
-| `2` | Smirk bun | `clean/clean_06.jpg` |
-| `3` | Silver bun | `clean/clean_01.jpg` |
-| `4` | Parted-lips bun | `clean/clean_05.jpg` |
-| `5` | Neck-tattoo avatar | `/workspace/avatar1/necktattoo_front.jpg` |
-| `c` | Calibrate. **Press after every switch** | |
-| `e` | Expression only (default, sharpest) | |
-| `a` | Expression + head pose (more alive, tattoos smear) | |
+| `1` | **Angle set 1**: slicked silver ponytail (server default). The photo that best matches your head angle is picked automatically | `/workspace/avatar1/sets/1/` (15 photos) |
+| `2` | **Angle set 2**: messy silver bun, same automatic angle picking | `/workspace/avatar1/sets/2/` (9 photos + 1 mirrored) |
+| `3` | Silver bun (single photo) | `clean/clean_01.jpg` |
+| `4` | Parted-lips bun (single photo) | `clean/clean_05.jpg` |
+| `5` | Neck-tattoo avatar (single photo) | `necktattoo_front.jpg` |
+| `m` | **Mode toggle**: LivePortrait avatar ↔ **true face swap** (Avatar1's face on your own head, hair and background; identity from the current set/photo) | |
+| `g` | Face-swap enhancer: GPEN (default) → GFPGAN (sharper, slower) → off | |
+| `p` | **Webcam inset** (your real camera, bottom-right, 22% width) on/off. Default on; it is part of what Meet sees | |
+| `v` | Angle switching on/off (sets 1/2; off = stay on the front photo) | |
+| `r` | Extra head turn on top of the chosen photo (±10°) on/off | |
+| `c` | Calibrate: look straight, neutral face. **Press after every switch** | |
+| `e` / `a` | Expression only (default, sharpest) / expression + head pose | |
 | `+` / `-` | Motion strength up/down (0.3–2.0) | |
 | `q` / Esc | Quit (closes the tunnel too) | |
 
-**Add a new face:** upload a head-on, neutral, sharp photo to `/workspace/avatar1/clean/`, then
-change the `sources` map in `live/capture_webcam.py` (search for `ord("1")`).
+Launcher flags: `start_live.ps1 -- --mode swap` starts in face-swap mode, `-- --no-inset` starts with the
+inset off, `-- --inset-corner bl` moves it, `-- --inset-size 0.3` makes it bigger.
+
+Speed on an RTX 4090 (pod-local, Oct 13 2026): LivePortrait angle sets ~37 fps max (31–34 ms per frame),
+face swap + GPEN ~28 fps, face swap + GFPGAN ~19 fps, face swap without enhancer ~47 fps. The laptop sends
+20 fps, so every mode runs at the full 20 fps; delay is network-bound (~100–150 ms over the tunnel).
+
+**How angle sets work:** at start the pod pre-encodes every photo in `sets/<n>/` (features + head yaw/pitch).
+Each frame it compares your head angle (relative to calibration, ×1.5) to the photos and switches to the
+closest one after it has been the best for 3 frames and is at least 6° better (no flicker), with a 4-frame
+crossfade. Turned photos missing on one side are mirrored automatically. Photos are aligned so the head
+stays in the same place when the photo changes.
+
+**Add photos to a set:** drop sharp, neutral-expression photos of the same look into
+`/workspace/avatar1/sets/<n>/` (keep the box copy `/workspace/fs/v2/face_assets/sets/<n>/` in sync) and
+restart the server. Strong expressions (laughing, tongue out, frowns) are better left out: in LivePortrait
+mode the photo's expression stays on top of yours.
+
+**New pod:** `runpod/bootstrap_avatar_pod.sh` installs the face-swap models; then push the private photos with
+`SSH_OPTS="-F ~/.ssh/pod.cfg" runpod/push_face_assets.sh <host>` from the box (or upload
+`face_assets.tar.gz` to `/workspace/` before bootstrapping).
 
 ## 6. Switch bodies (full-body live)
 

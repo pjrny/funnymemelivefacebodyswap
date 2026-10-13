@@ -10,9 +10,14 @@ Usage (Windows, from the FaceBodySwapStream folder):
     live\\.venv\\Scripts\\python.exe live\\capture_webcam.py
 Options: --cam 0  --width 640 --height 480  --fps 20  --q 70  --no-vcam  --no-window
          --url wss://<podid>-8080.proxy.runpod.net/ws   (default: read from live\\live_config.json)
-Keys in the preview window:
-    c = calibrate (hold a neutral face, press c)    e = expression-only   a = expression + head pose
-    1/2/3 = tattoo_front / clean_front / necktattoo_front     +/- = motion strength    q/Esc = quit
+Keys in the preview window (v2):
+    1 / 2 = Avatar1 angle sets (folders no_tattoos/1 and no_tattoos/2; the photo matching your head
+            angle is picked automatically)       3 / 4 / 5 = clean_01 / clean_05 / necktattoo_front
+    m = toggle mode: LivePortrait avatar <-> true face swap (keeps your own hair)
+    g = face-swap enhancer: GFPGAN -> GPEN -> off        v = angle switching on/off (sets 1/2)
+    r = extra head-turn on/off (angle sets)              p = your webcam inset in the corner on/off
+    c = calibrate (look straight, neutral face)          e / a = expression-only / expression + head pose
+    +/- = motion strength                                q/Esc = quit
 """
 import argparse, json, os, struct, sys, threading, time
 import http.server, socketserver
@@ -56,6 +61,24 @@ class State:
 
 
 S = State()
+INSET = {"on": True, "frac": 0.22, "corner": "br"}
+
+
+def add_inset(img, cam):
+    """picture-in-picture of the raw webcam (bottom-right, ~22% width, white border)"""
+    if not INSET["on"] or cam is None or img is None:
+        return img
+    H, W = img.shape[:2]
+    w = max(32, int(W * INSET["frac"]))
+    h = int(cam.shape[0] * w / cam.shape[1])
+    pip = cv2.resize(cam, (w, h), interpolation=cv2.INTER_AREA)
+    m = max(6, W // 100)
+    x = W - w - m if "r" in INSET["corner"] else m
+    y = H - h - m if "b" in INSET["corner"] else m
+    out = img.copy()
+    cv2.rectangle(out, (x - 2, y - 2), (x + w + 1, y + h + 1), (255, 255, 255), 2)
+    out[y:y + h, x:x + w] = pip
+    return out
 
 
 # ---------------- webcam ----------------
@@ -193,6 +216,11 @@ def recv_loop(args, vcam):
                 S.recv_times = [t for t in S.recv_times if now - t < 2.0]
                 S.fps = len(S.recv_times) / 2.0
                 with S.lock:
+                    cam = S.cam_frame
+                if INSET["on"] and cam is not None:
+                    img = add_inset(img, cam)
+                    jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+                with S.lock:
                     S.out_jpg, S.out_img = jpg, img
                     S.out_seq += 1
                 if vcam is not None:
@@ -283,7 +311,13 @@ def main():
     ap.add_argument("--http-port", type=int, default=8766)
     ap.add_argument("--seconds", type=float, default=0, help="auto-exit after N seconds (testing)")
     ap.add_argument("--snap-dir", default=None, help="save a rendered frame every 3 s here (testing)")
+    ap.add_argument("--no-inset", action="store_true", help="start with the webcam corner inset off (toggle: p)")
+    ap.add_argument("--inset-size", type=float, default=0.22, help="inset width as a fraction of the output")
+    ap.add_argument("--inset-corner", default="br", choices=["br", "bl", "tr", "tl"])
+    ap.add_argument("--mode", default=None, choices=["lp", "swap"], help="start mode (toggle: m)")
+    ap.add_argument("--keys", default=None, help="run a key script for testing, e.g. '5:m,10:2,15:m'")
     args = ap.parse_args()
+    INSET.update(on=not args.no_inset, frac=args.inset_size, corner=args.inset_corner)
     if not args.url:
         if not cfg.get("url") or not cfg.get("token"):
             sys.exit(f"missing url/token: create {CFG_PATH}")
@@ -313,11 +347,51 @@ def main():
     t_start = time.time()
     last_print = 0
     last_snap = 0
-    sources = {ord("1"): "clean/clean_03.jpg", ord("2"): "clean/clean_06.jpg", ord("3"): "clean/clean_01.jpg", ord("4"): "clean/clean_05.jpg",
-               ord("5"): "necktattoo_front.jpg"}  # 1 ponytail (favorite), 2 smirk bun, 3 silver bun, 4 parted-lips bun, 5 neck-tattoo avatar
+    # 1/2 = angle sets (pod: /workspace/avatar1/sets/1, sets/2); 3/4/5 = single photos as before
+    sets = {ord("1"): "1", ord("2"): "2"}
+    sources = {ord("3"): "clean/clean_01.jpg", ord("4"): "clean/clean_05.jpg", ord("5"): "necktattoo_front.jpg"}
     mult = 1.0
-    win = "Avatar1 live (c=calibrate, e/a=exp/all, 1-4 clean, 5 tattoo, q=quit)"
+    toggles = {"angle": True, "residual": True}
+    win = "Avatar1 live v2 (1/2 sets, 3-5 photos, m swap, p inset, c calibrate, q quit)"
+    script = []
+    if args.keys:
+        for item in args.keys.split(","):
+            t, key = item.split(":")
+            script.append((float(t), key))
+    if args.mode:
+        threading.Thread(target=lambda: (time.sleep(2.0), control({"mode": args.mode})), daemon=True).start()
+
+    def handle_key(k):
+        nonlocal mult
+        if k == ord("c"):
+            control({"cmd": "calibrate"})
+        elif k == ord("e"):
+            control({"region": "exp"})
+        elif k == ord("a"):
+            control({"region": "all"})
+        elif k in sets:
+            control({"set": sets[k]})
+        elif k in sources:
+            control({"source": sources[k]})
+        elif k == ord("m"):
+            S.msg = "switching mode (first time loads the face-swap models)..."
+            control({"mode": "toggle"})
+        elif k == ord("g"):
+            control({"enhance": "cycle"})
+        elif k == ord("v"):
+            toggles["angle"] = not toggles["angle"]; control({"angle": toggles["angle"]})
+        elif k == ord("r"):
+            toggles["residual"] = not toggles["residual"]; control({"residual_deg": 10 if toggles["residual"] else 0})
+        elif k == ord("p"):
+            INSET["on"] = not INSET["on"]
+        elif k in (ord("+"), ord("=")):
+            mult = min(2.0, mult + 0.1); control({"multiplier": mult})
+        elif k == ord("-"):
+            mult = max(0.3, mult - 0.1); control({"multiplier": mult})
+
     while S.running:
+        if script and time.time() - t_start >= script[0][0]:
+            handle_key(ord(script.pop(0)[1][0]))
         now = time.time()
         if now - last_print > 5:
             last_print = now
@@ -334,11 +408,7 @@ def main():
                 cv2.imwrite(os.path.join(args.snap_dir, f"cam_{stamp}.jpg"), cam)
         if not args.no_window:
             if img is not None:
-                view = img.copy()
-                if cam is not None:  # small self-view in the corner
-                    h = view.shape[0] // 4
-                    pip = cv2.resize(cv2.flip(cam, 1), (int(cam.shape[1] * h / cam.shape[0]), h))
-                    view[-h:, -pip.shape[1]:] = pip
+                view = img.copy()  # the inset is already part of the output (what Meet sees)
                 txt = f"{S.fps:.1f} fps  {S.lat_ms or 0:.0f} ms" + ("  NO FACE" if S.no_face else "")
                 cv2.putText(view, txt, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.imshow(win, view)
@@ -351,18 +421,8 @@ def main():
             k = cv2.waitKey(15) & 0xFF
             if k in (ord("q"), 27):
                 break
-            elif k == ord("c"):
-                control({"cmd": "calibrate"})
-            elif k == ord("e"):
-                control({"region": "exp"})
-            elif k == ord("a"):
-                control({"region": "all"})
-            elif k in sources:
-                control({"source": sources[k]})
-            elif k in (ord("+"), ord("=")):
-                mult = min(2.0, mult + 0.1); control({"multiplier": mult})
-            elif k == ord("-"):
-                mult = max(0.3, mult - 0.1); control({"multiplier": mult})
+            if k != 255:
+                handle_key(k)
         else:
             time.sleep(0.05)
         if args.seconds and now - t_start > args.seconds:

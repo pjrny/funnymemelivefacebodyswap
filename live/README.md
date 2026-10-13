@@ -57,3 +57,14 @@ Preview window keys: `c` calibrate (hold a neutral face and press c) · `e` expr
   face tracking, and a pod with a faster CPU.
 
 Full walkthrough, key table, Meet/Zoom setup, and troubleshooting live in [docs/USAGE.md](../docs/USAGE.md) and [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md).
+
+## v2 (Oct 13 2026): angle sets, true face swap, webcam inset
+
+- `pod_live_server.py` now loads **angle sets** (`/workspace/avatar1/sets/1`, `sets/2`; keys `1`/`2`) and picks
+  the photo matching Oscar's head angle every frame (hysteresis + crossfade, mirrored fill-ins, aligned framing).
+- `face_swap_engine.py`: **true face swap** (`m`): InsightFace SCRFD + inswapper_128 with Avatar1's averaged
+  ArcFace identity, GPEN-256 / GFPGAN-1.4 restore (`g`), feathered paste-back. Keeps Oscar's own hair.
+- `capture_webcam.py`: **webcam inset** (`p`) composited laptop-side into the virtual camera + MJPEG output.
+- `tools/ws_bench_v2.py`: pod-local throughput test of every mode.
+- Pod setup: `runpod/bootstrap_avatar_pod.sh` (models) + `runpod/push_face_assets.sh` (private photos).
+Keys and speeds: [docs/USAGE.md](../docs/USAGE.md#5-switch-faces-and-modes-face-live-v2).

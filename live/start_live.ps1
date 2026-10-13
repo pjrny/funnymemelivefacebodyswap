@@ -4,6 +4,7 @@
 #   -Video <file>  drive from a video/image file instead of the webcam (testing)
 #   -Cam <n>       webcam index (default 0)      -SnapDir <dir>  save a sample frame every 3 s
 #   any other args go straight to capture_webcam.py, e.g.  start_live.ps1 -- --fps 15 --no-vcam
+#   v2: start_live.ps1 -- --mode swap   (start in true face-swap mode)   start_live.ps1 -- --no-inset
 param([switch]$NoTunnel, [string]$Video = "", [int]$Cam = 0, [string]$SnapDir = "",
       [Parameter(ValueFromRemainingArguments = $true)]$Rest)
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

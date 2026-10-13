@@ -8,6 +8,9 @@
 #   /workspace/LivePortrait                 <- KlingTeam/KwaiVGI LivePortrait + its own Python 3.10 venv
 #   /workspace/LivePortrait/pretrained_weights <- human-mode weights from Hugging Face
 #   /workspace/run_lp_still.sh              <- helper for a still-image LivePortrait pass
+#   /workspace/models/fs                    <- face-swap models (inswapper_128, GFPGAN 1.4, GPEN-256)
+#   /workspace/avatar1/{sets/1,sets/2,clean,necktattoo_front.jpg} <- face photos (restored from face_assets.tar.gz)
+#   /workspace/live                         <- live server (pod_live_server.py + face_swap_engine.py)
 #
 # Usage (on the pod, as root):
 #   curl -fsSL https://raw.githubusercontent.com/pjrny/funnymemelivefacebodyswap/main/runpod/bootstrap_avatar_pod.sh | bash
@@ -107,6 +110,44 @@ export LD_LIBRARY_PATH="$(ls -d "$SP"/nvidia/*/lib 2>/dev/null | paste -sd:):${L
 exec .venv/bin/python inference.py -s "$SRC" -d "$DRV" -o /workspace/avatar1/out "$@"
 RUNEOF
 chmod +x $WS/run_lp_still.sh
+
+# 7. face live v2: InsightFace face-swap models + live server files + Avatar1 face sets
+FS_DIR=$WS/models/fs
+mkdir -p "$FS_DIR" $WS/live
+if ! "$PY" -c "import insightface" 2>/dev/null; then
+  log "installing insightface (face-swap mode)"
+  # insightface builds a small Cython extension: needs Python.h for the venv's interpreter
+  PYV=$("$PY" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+  INC=$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
+  if [[ ! -f $INC/Python.h ]]; then
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "python${PYV}-dev" >/dev/null 2>&1 \
+      || { add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "python${PYV}-dev" >/dev/null; }
+  fi
+  uv pip install --python "$PY" "insightface==0.7.3" fastapi "uvicorn[standard]" websockets >/dev/null
+fi
+fetch() { [[ -s $FS_DIR/$1 ]] || { log "downloading $1"; curl -fsSL -o "$FS_DIR/$1.tmp" "$2" && mv "$FS_DIR/$1.tmp" "$FS_DIR/$1"; }; }
+fetch inswapper_128.onnx https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx
+fetch gfpgan_1.4.onnx    https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx
+fetch gpen_bfr_256.onnx  https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gpen_bfr_256.onnx
+if [[ ! -f $HOME/.insightface/models/buffalo_l/det_10g.onnx ]]; then
+  log "downloading insightface buffalo_l"
+  "$PY" -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])" >/dev/null 2>&1 || true
+fi
+cp -f "$REPO_DIR"/live/pod_live_server.py "$REPO_DIR"/live/face_swap_engine.py "$REPO_DIR"/live/start_live_server.sh $WS/live/ 2>/dev/null || true
+chmod +x $WS/live/start_live_server.sh 2>/dev/null || true
+# Avatar1 face photos are private and never in git. They arrive as /workspace/face_assets.tar.gz,
+# pushed by runpod/push_face_assets.sh (box or laptop), or from FACE_ASSETS_URL if set.
+if [[ ! -d $AV_DIR/sets/1 ]]; then
+  if [[ -n "${FACE_ASSETS_URL:-}" && ! -f $WS/face_assets.tar.gz ]]; then
+    curl -fsSL -o $WS/face_assets.tar.gz "$FACE_ASSETS_URL" || log "WARN: FACE_ASSETS_URL download failed"
+  fi
+  if [[ -f $WS/face_assets.tar.gz ]]; then
+    log "restoring Avatar1 face sets"; tar -xzf $WS/face_assets.tar.gz -C "$AV_DIR"
+  else
+    log "NOTE: no face sets yet - run runpod/push_face_assets.sh <ssh-host-alias> from the box"
+  fi
+fi
+ls "$AV_DIR"/sets 2>/dev/null | sed 's/^/[bootstrap] face set: /' || true
 
 log "versions: $("$PY" -c 'import torch, onnxruntime as o; print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "| ort", o.__version__, o.get_available_providers())')"
 
