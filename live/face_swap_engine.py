@@ -46,7 +46,7 @@ def _soft_mask(n, pad=0.1, blur=0.12):
 
 class FaceSwapEngine:
     def __init__(self, models_dir="/workspace/models/fs", providers=None, enhancer="gpen",
-                 det_size=320, enhance_blend=0.75, beard_on=True, jaw_strength=0.4):
+                 det_size=320, enhance_blend=0.75, beard_on=True, jaw_strength=1.0):
         if providers is None:
             providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in ort.get_available_providers()]
         self.providers = providers
@@ -73,7 +73,7 @@ class FaceSwapEngine:
         self.miss = 0
         self.smooth = 0.5
         self.t = {}
-        # beard cover + jaw slim (need the 106-point landmark model from buffalo_l)
+        # light beard smoothing + jaw slim (need the 106-point landmark model from buffalo_l)
         self.lmk = None
         try:
             from insightface.model_zoo import get_model as _gm
@@ -86,8 +86,6 @@ class FaceSwapEngine:
         self.beard_on = beard_on and self.lmk is not None
         self.jaw_strength = float(jaw_strength)
         self.l106 = None
-        rng = np.random.default_rng(7)
-        self.grain = cv2.GaussianBlur(rng.normal(0, 1, (256, 256)).astype(np.float32), (0, 0), 0.8) * 2.5
 
     # ---------- identity ----------
     def set_identity(self, paths, max_yaw=25.0):
@@ -153,55 +151,30 @@ class FaceSwapEngine:
         poly = np.concatenate([[[low[0, 0], top]], out, [[low[-1, 0], top]]])
         return poly.astype(np.int32), fh
 
-    def _beard_clean(self, frame, l):
-        """fill the beard area with smooth cheek-coloured skin (+ fine grain), keep the lips"""
+    def _beard_smooth(self, frame, M, l, n=128):
+        """v3: light edge-preserving smoothing of stubble only. Region = original swap mask footprint
+        (inverse-warped mask128) INTERSECTED with the landmark lower-face polygon (no neck extension),
+        lips excluded. No colour fill, never reaches hair outside the original face mask."""
         H, W = frame.shape[:2]
-        poly, fh = self._lower_face_poly(l)
-        x0, y0 = np.maximum(poly.min(0) - 8, 0); x1, y1 = np.minimum(poly.max(0) + 8, (W, H))
-        if x1 - x0 < 8 or y1 - y0 < 8:
-            return frame, None
-        roi = frame[y0:y1, x0:x1].astype(np.float32)
-        m = np.zeros(roi.shape[:2], np.uint8)
-        cv2.fillPoly(m, [poly - (x0, y0)], 255)
-        lips = cv2.convexHull((l[LIPS] - (x0, y0)).astype(np.int32))
-        lm = np.zeros_like(m); cv2.fillConvexPoly(lm, lips, 255)
-        lm = cv2.dilate(lm, None, iterations=2)
-        m[lm > 0] = 0
-        # cheek skin sample: patches between the eye line and the nose bottom, either side of the nose
-        ey, ny = l[EYE_IDX, 1].mean(), l[NOSE_BOTTOM, 1].mean()
-        cols = []
-        for a, b in ((CHEEK_L, 76), (CHEEK_R, 82)):
-            cx = int(0.5 * (l[a, 0] + l[b, 0])); cy = int(0.5 * (ey + ny) + 0.15 * (ny - ey))
-            r = max(2, int(0.05 * fh))
-            p = frame[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
-            if p.size:
-                cols.append(np.median(p.reshape(-1, 3), 0))
-        if not cols:
-            return frame, None
-        skin = np.mean(cols, 0).astype(np.float32)
-        # keep soft lighting: heavily blurred luminance ratio, clamped so dark stubble does not survive
-        lum = cv2.cvtColor(roi.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        k = max(3, int(0.12 * fh)) | 1
-        shade = cv2.GaussianBlur(lum, (0, 0), k / 2.0) / max(1.0, float(skin.mean()))
-        shade = np.clip(shade, 0.93, 1.04)[..., None]
-        g = cv2.resize(self.grain, (x1 - x0, y1 - y0))[..., None]
-        fill = skin[None, None] * shade + g
-        mf = cv2.GaussianBlur(m.astype(np.float32) / 255.0, (0, 0), max(1.5, 0.03 * fh))[..., None]
-        out = frame.copy()
-        out[y0:y1, x0:x1] = np.clip(mf * fill + (1 - mf) * roi, 0, 255).astype(np.uint8)
-        return out, (poly, fh)
-
-    def _swap_mask(self, frame_shape, M, l, n=128):
-        """crop-space mask = inner box mask UNION feathered jaw/chin polygon"""
         poly, fh = self._lower_face_poly(l, neck=0.0)
-        full = np.concatenate([l[CONTOUR], poly]).astype(np.float32)
-        hull = cv2.convexHull(full)
-        pts = cv2.transform(hull.reshape(-1, 1, 2), M).reshape(-1, 2)
-        m = np.zeros((n, n), np.float32)
-        cv2.fillConvexPoly(m, pts.astype(np.int32), 1.0)
-        m = cv2.erode(m, None, iterations=2)
-        m = cv2.GaussianBlur(m, (0, 0), n * 0.03)
-        return np.maximum(m, self.mask128)
+        x0, y0 = np.maximum(poly.min(0) - 6, 0); x1, y1 = np.minimum(poly.max(0) + 6, (W, H))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            return frame
+        m = np.zeros((y1 - y0, x1 - x0), np.float32)
+        cv2.fillPoly(m, [poly - (x0, y0)], 1.0)
+        Mi = cv2.invertAffineTransform(M); Mi[:, 2] -= (x0, y0)
+        fm = cv2.warpAffine(self.mask128, Mi, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
+        lm = np.zeros_like(m)
+        cv2.fillConvexPoly(lm, cv2.convexHull((l[LIPS] - (x0, y0)).astype(np.int32)), 1.0)
+        lm = cv2.dilate(lm, None, iterations=2)
+        m = cv2.GaussianBlur(m * (1 - lm), (0, 0), max(1.5, 0.025 * fh)) * fm
+        roi = frame[y0:y1, x0:x1]
+        d = max(5, int(0.04 * fh)) | 1
+        sm = cv2.bilateralFilter(roi, d, 28, d)
+        a = (0.7 * m)[..., None]
+        out = frame.copy()
+        out[y0:y1, x0:x1] = np.clip(a * sm + (1 - a) * roi, 0, 255).astype(np.uint8)
+        return out
 
     # ---------- jaw slim ----------
     def _jaw_slim(self, img, l, strength):
@@ -295,18 +268,15 @@ class FaceSwapEngine:
             self.kps = kps
         l = self._landmarks(frame) if (self.beard_on or self.jaw_strength > 0.01) and self.lmk is not None else None
         tb = time.perf_counter()
-        base = frame
-        if self.beard_on and l is not None:
-            base, _ = self._beard_clean(frame, l)
         M = _sim(kps, ARCFACE_128)
-        crop = cv2.warpAffine(base, M, (128, 128), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        base = self._beard_smooth(frame, M, l) if (self.beard_on and l is not None) else frame
+        crop = cv2.warpAffine(frame, M, (128, 128), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         blob = cv2.dnn.blobFromImage(crop, 1.0 / 255.0, (128, 128), (0, 0, 0), swapRB=True)
         pred = self.swapper.session.run(self.swapper.output_names,
                                         {self.swapper.input_names[0]: blob, self.swapper.input_names[1]: self.latent})[0]
         face = (np.clip(pred[0].transpose(1, 2, 0), 0, 1) * 255.0)[:, :, ::-1]
         t2 = time.perf_counter()
-        mask = self._swap_mask(frame.shape, M, l) if (self.beard_on and l is not None) else self.mask128
-        out = self._paste(base.copy(), face, M, mask)
+        out = self._paste(base.copy(), face, M, self.mask128)
         if self.enhance_on and self.enhancer:
             out = self._enhance(out, kps)
         t3 = time.perf_counter()
@@ -323,7 +293,7 @@ if __name__ == "__main__":  # quick CPU test: python face_swap_engine.py SET_DIR
     ap = argparse.ArgumentParser()
     ap.add_argument("set_dir"); ap.add_argument("frames", nargs="+"); ap.add_argument("-o", default=".")
     ap.add_argument("--models", default="/workspace/models/fs"); ap.add_argument("--enh", default="gfpgan")
-    ap.add_argument("--beard", type=int, default=1); ap.add_argument("--jaw", type=float, default=0.4)
+    ap.add_argument("--beard", type=int, default=1); ap.add_argument("--jaw", type=float, default=1.0)
     a = ap.parse_args()
     E = FaceSwapEngine(a.models, enhancer=a.enh, beard_on=bool(a.beard), jaw_strength=a.jaw)
     print("identity from", E.set_identity(sorted(glob.glob(os.path.join(a.set_dir, "*.jpg")))))

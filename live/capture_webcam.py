@@ -17,8 +17,8 @@ Keys in the preview window (v2):
     g = face-swap enhancer: GFPGAN -> GPEN -> off        v = angle switching on/off (sets 1/2)
     r = extra head-turn on/off (angle sets)              p = your webcam inset in the corner on/off
     c = calibrate (look straight, neutral face)          e / a = expression-only / expression + head pose
-    b = beard cover on/off (face-swap mode)              +/- = jaw slim 0..1 in face-swap mode
-                                                           (default 0.4), motion strength otherwise
+    b = light beard smoothing on/off (swap)            +/- = jaw slim 0..1 in face-swap mode
+                                                           (default 1.0), motion strength otherwise
     q/Esc = quit
 """
 import argparse, json, os, struct, sys, threading, time

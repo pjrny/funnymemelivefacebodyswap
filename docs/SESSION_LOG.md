@@ -32,3 +32,16 @@
 **Not done:** there is no readily available 256-px inswapper-class model, so the pipeline stays on inswapper_128 + GPEN.
 
 **To check in the next live session:** how the fill looks under different lighting. The skin fill is smooth, so the lower face looks slightly airbrushed. Also check the neck and under-chin when not wearing a hood.
+
+## 2026-10-13: live test of beard cover + jaw slim, revised to v3
+
+**Oscar's feedback (live session):**
+- The beard skin-fill was too much: obvious discoloration when looking up or to the side, and with hair down the re-paint covered his hair.
+- Go back to how the swap replaced the face before, with only basic smoothing.
+- Jaw: keep slimming at max (1.0, smallest jaw) as the default.
+
+**Changes (v3):**
+- Removed the cheek-colour fill and the widened chin/neck blend mask; the swap uses the original v2 inner-face mask and blending again.
+- `b` now toggles a light bilateral (edge-preserving) smoothing of stubble, limited to the original face-mask footprint intersected with the landmark lower-face polygon, lips excluded. Hair outside the face mask is never touched.
+- Default jaw 1.0 (`FS_JAW=1.0`); saved settings (`swap_settings.json`) still win.
+- CPU comparison on front/turned/looking-up frames: webcam / old v2 / heavy fill / v3 (`beard_v3_compare.jpg`, not in git). Cost about 1 ms extra vs. old v2 on top of the jaw warp.

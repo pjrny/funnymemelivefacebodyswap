@@ -645,7 +645,7 @@ class Engine:
     # ---------- persistent face-swap settings (jaw / beard / enhancer); face-swap mode only ----------
     def swap_cfg(self):
         if not hasattr(self, "_swap_cfg"):
-            c = {"jaw": float(os.environ.get("FS_JAW", "0.4")), "beard": os.environ.get("FS_BEARD", "1") == "1",
+            c = {"jaw": float(os.environ.get("FS_JAW", "1.0")), "beard": os.environ.get("FS_BEARD", "1") == "1",
                  "enhancer": os.environ.get("FS_ENHANCER", "gpen")}
             try:
                 with open(SWAP_SETTINGS_PATH) as f:
