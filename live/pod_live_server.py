@@ -33,6 +33,7 @@ LP_DIR = os.environ.get("LP_DIR", "/workspace/LivePortrait")
 sys.path.insert(0, LP_DIR)
 os.chdir(LP_DIR)
 
+SWAP_SETTINGS_PATH = os.environ.get("SWAP_SETTINGS", "/workspace/live/swap_settings.json")
 import numpy as np
 import cv2
 import torch
@@ -463,9 +464,11 @@ class Engine:
         if self.swapper is None:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from face_swap_engine import FaceSwapEngine
-            self.swapper = FaceSwapEngine(FS_MODELS, enhancer=os.environ.get("FS_ENHANCER", "gpen"),
-                                          beard_on=os.environ.get("FS_BEARD", "1") == "1",
-                                          jaw_strength=float(os.environ.get("FS_JAW", "0.4")))
+            sc = self.swap_cfg()
+            self.swapper = FaceSwapEngine(FS_MODELS, enhancer=sc["enhancer"] if sc["enhancer"] != "off" else "gpen",
+                                          beard_on=bool(sc["beard"]), jaw_strength=float(sc["jaw"]))
+            if sc["enhancer"] == "off":
+                self.swapper.enhance_on = False
             # warm up (cuDNN autotune) on the current source photo
             bgr = cv2.cvtColor(self.source_rgb, cv2.COLOR_RGB2BGR)
         key = tuple(self._swap_identity_paths())
@@ -630,7 +633,58 @@ class Engine:
                     if nxt: self.swapper.enhancer = nxt
                 else:
                     self.swapper.enhance_on = bool(v)
+        if "swap_settings" in d and isinstance(d["swap_settings"], dict):
+            self.apply_swap_settings(d["swap_settings"])
+        if self.swapper is None:  # keys pressed before the swap models load still change the defaults
+            c = self.swap_cfg()
+            if "jaw" in d: c["jaw"] = round(max(0.0, min(1.0, float(d["jaw"]))), 2)
+            if "beard" in d and d["beard"] != "toggle": c["beard"] = bool(d["beard"])
+        self.save_swap_settings()
         return self.summary()
+
+    # ---------- persistent face-swap settings (jaw / beard / enhancer); face-swap mode only ----------
+    def swap_cfg(self):
+        if not hasattr(self, "_swap_cfg"):
+            c = {"jaw": float(os.environ.get("FS_JAW", "0.4")), "beard": os.environ.get("FS_BEARD", "1") == "1",
+                 "enhancer": os.environ.get("FS_ENHANCER", "gpen")}
+            try:
+                with open(SWAP_SETTINGS_PATH) as f:
+                    c.update({k: v for k, v in json.load(f).items() if k in c})
+            except Exception:
+                pass
+            self._swap_cfg = c
+        return self._swap_cfg
+
+    def apply_swap_settings(self, d):
+        """Set swap defaults (sent by the laptop on connect); applied live if the swapper is loaded."""
+        c = self.swap_cfg()
+        if "jaw" in d: c["jaw"] = round(max(0.0, min(1.0, float(d["jaw"]))), 2)
+        if "beard" in d: c["beard"] = bool(d["beard"])
+        if "enhancer" in d and d["enhancer"] in ("gfpgan", "gpen", "off"): c["enhancer"] = d["enhancer"]
+        sw = self.swapper
+        if sw is not None:
+            sw.jaw_strength = c["jaw"]
+            sw.beard_on = c["beard"] and sw.lmk is not None
+            if c["enhancer"] == "off": sw.enhance_on = False
+            elif c["enhancer"] in sw.enh: sw.enhancer, sw.enhance_on = c["enhancer"], True
+
+    def save_swap_settings(self):
+        c = dict(self.swap_cfg())
+        sw = self.swapper
+        if sw is not None:
+            c = {"jaw": round(float(sw.jaw_strength), 2), "beard": bool(sw.beard_on),
+                 "enhancer": sw.enhancer if (sw.enhance_on and sw.enhancer) else "off"}
+            self._swap_cfg.update(c)
+        if c != getattr(self, "_swap_saved", None):
+            try:
+                os.makedirs(os.path.dirname(SWAP_SETTINGS_PATH), exist_ok=True)
+                tmp = SWAP_SETTINGS_PATH + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(dict(c, saved_at=time.strftime("%Y-%m-%d %H:%M:%S")), f)
+                os.replace(tmp, SWAP_SETTINGS_PATH)
+                self._swap_saved = c
+            except Exception as e:
+                print("[live] swap settings save failed:", e, flush=True)
 
     def summary(self):
         now = time.time()
@@ -641,6 +695,7 @@ class Engine:
                 "residual_deg": self.residual_deg, "pose_gain": self.pose_gain,
                 "enhancer": (sw.enhancer if sw.enhance_on else "off") if sw else None,
                 "beard": sw.beard_on if sw else None, "jaw": sw.jaw_strength if sw else None,
+                "swap_settings": dict(self.swap_cfg()),
                 "swap_ms": {k: round(v, 1) for k, v in sw.t.items()} if sw else None,
                 "region": self.region, "multiplier": self.multiplier,
                 "smooth": self.smooth, "driving_option": self.driving_option,

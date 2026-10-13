@@ -33,6 +33,32 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "live_config.json")
 
 
+SWAP_PATH = os.path.join(HERE, "swap_settings.json")
+SWAP = {}  # face-swap mode settings (jaw, beard, enhancer); saved on quit, sent to the pod on connect
+
+
+def load_swap():
+    try:
+        with open(SWAP_PATH) as f:
+            d = json.load(f)
+        SWAP.update({k: d[k] for k in ("jaw", "beard", "enhancer") if k in d})
+    except Exception:
+        pass
+
+
+def save_swap():
+    if not SWAP:
+        return
+    try:
+        tmp = SWAP_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(dict(SWAP, saved_at=time.strftime("%Y-%m-%d %H:%M:%S")), f, indent=1)
+        os.replace(tmp, SWAP_PATH)
+        print("saved face-swap settings:", SWAP, "->", SWAP_PATH, flush=True)
+    except Exception as e:
+        print("could not save face-swap settings:", e, flush=True)
+
+
 def load_cfg():
     cfg = {}
     if os.path.exists(CFG_PATH):
@@ -188,11 +214,20 @@ def recv_loop(args, vcam):
             S.sent = S.recv = 0
             S.ws = ws
             S.msg = "connected"
+            if SWAP:
+                ws.send(json.dumps({"swap_settings": dict(SWAP)}))
             print("connected to pod", flush=True)
             while S.running:
                 op, data = ws.recv_data()
                 if op == websocket.ABNF.OPCODE_TEXT:
                     print("pod:", data.decode(errors="ignore"), flush=True)
+                    try:
+                        st = json.loads(data.decode(errors="ignore"))
+                        sw = st.get("swap_settings")
+                        if isinstance(sw, dict):
+                            SWAP.update({k: sw[k] for k in ("jaw", "beard", "enhancer") if k in sw})
+                    except Exception:
+                        pass
                     S.msg = "settings: " + data.decode(errors="ignore")[:90]
                     continue
                 if op != websocket.ABNF.OPCODE_BINARY or len(data) < 16:
@@ -299,6 +334,11 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 def main():
     cfg = load_cfg()
+    load_swap()
+    if SWAP:
+        print("face-swap defaults:", SWAP, flush=True)
+    import atexit
+    atexit.register(save_swap)
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default=None)
     ap.add_argument("--cam", type=int, default=cfg.get("cam", 0))
@@ -432,6 +472,7 @@ def main():
         if args.seconds and now - t_start > args.seconds:
             break
     S.running = False
+    save_swap()
     print(f"final: fps {S.fps:.1f} latency {S.lat_ms or 0:.0f} ms pod render {S.srv_ms or 0:.1f} ms sent {S.sent} recv {S.recv}", flush=True)
     time.sleep(0.3)
     if vcam is not None:

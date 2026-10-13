@@ -273,3 +273,9 @@ Repeats used: main 2, hourglass 3, testing 6, outfits 2, tattoo 3, face refs 3.
 
 Where files go: keep the LoRA in a local, **non-synced** folder (move it out of OneDrive), ideally
 inside a 7-Zip AES-256 archive, and upload it to the pod per session.
+
+### Face-swap settings are remembered (mode `m`)
+Jaw slim (`-`/`=`), beard cover (`b`) and enhancer (`g`) in face-swap mode are saved when you quit (`q`)
+to `live\swap_settings.json` on the laptop and sent to the pod as defaults on the next connect. The pod also
+writes its current values to `/workspace/live/swap_settings.json` on every change (recovery if the laptop is
+killed). LivePortrait mode is not affected.
